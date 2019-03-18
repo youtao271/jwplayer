@@ -349,14 +349,17 @@ Object.assign(Controller.prototype, {
             if (model.get('playOnViewable')) {
                 if (viewable) {
                     const reason = 'viewable';
-                    if (model.get('state') === STATE_IDLE) {
+                    if (model.get('state') === STATE_IDLE && !_getAdState()) {
                         _autoStart(reason);
                     } else {
                         _play({ reason });
                     }
-                } else if (OS.mobile && !_getAdState()) {
-                    _this.pause({ reason: 'autostart' });
-                    _model.set('playOnViewable', true);
+                } else if (OS.mobile) {
+                    const autoPause = model.get('autoPause').viewability;
+                    if (!autoPause || (autoPause && !_getAdState())) {
+                        _this.pause({ reason: 'autostart' });
+                        _model.set('playOnViewable', true);
+                    }
                 }
             }
         }
