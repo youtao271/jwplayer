@@ -47,7 +47,8 @@ export const optionalProperties = {
     viewable: true,
     castClicked: false,
     castState: '',
-    castActive: ''
+    castActive: '',
+    _hlsjsProgressive: true
 };
 
 export const adModelProperties = {
