@@ -9,7 +9,7 @@ import { MEDIA_SEEK, MEDIA_TIME } from 'events/events';
 
 let _WebVTT;
 
-const _defaults = {
+export const _defaults = {
     back: true,
     backgroundOpacity: 50,
     edgeStyle: null,
@@ -128,33 +128,35 @@ const CaptionsRenderer = function (viewModel) {
         _textContainer = document.createElement('span');
         _captionsWindow.className = 'jw-captions-window jw-reset';
         _textContainer.className = 'jw-captions-text jw-reset';
-
         _options = Object.assign({}, _defaults, options);
-
         _fontScale = _defaults.fontScale;
-        _setFontScale(_options.fontSize);
 
-        const windowColor = _options.windowColor;
-        const windowOpacity = _options.windowOpacity;
-        const edgeStyle = _options.edgeStyle;
-        _windowStyle = {};
-        const textStyle = {};
+        const styleCaptions = () => {
+            _setFontScale(_options.fontSize);
+    
+            const windowColor = _options.windowColor;
+            const windowOpacity = _options.windowOpacity;
+            const edgeStyle = _options.edgeStyle;
+            _windowStyle = {};
+            const textStyle = {};
+            _addTextStyle(textStyle, _options);
 
-        _addTextStyle(textStyle, _options);
+            if (windowColor || windowOpacity !== _defaults.windowOpacity) {
+                _windowStyle.backgroundColor = getRgba(windowColor || '#000000', windowOpacity);
+            }
+    
+            _addEdgeStyle(edgeStyle, textStyle, _options.fontOpacity);
+    
+            if (!_options.back && edgeStyle === null) {
+                _addEdgeStyle('uniform', textStyle);
+            }
+    
+            style(_captionsWindow, _windowStyle);
+            style(_textContainer, textStyle);
+            _setupCaptionStyles(playerElementId, textStyle);
+        };
 
-        if (windowColor || windowOpacity !== _defaults.windowOpacity) {
-            _windowStyle.backgroundColor = getRgba(windowColor || '#000000', windowOpacity);
-        }
-
-        _addEdgeStyle(edgeStyle, textStyle, _options.fontOpacity);
-
-        if (!_options.back && edgeStyle === null) {
-            _addEdgeStyle('uniform', textStyle);
-        }
-
-        style(_captionsWindow, _windowStyle);
-        style(_textContainer, textStyle);
-        _setupCaptionStyles(playerElementId, textStyle);
+        styleCaptions();
 
         _captionsWindow.appendChild(_textContainer);
         _display.appendChild(_captionsWindow);
@@ -164,6 +166,11 @@ const CaptionsRenderer = function (viewModel) {
         }, this);
 
         _model.set('captions', _options);
+        _model.on('change:captions', (model, newOptions) => {
+            _options = newOptions;
+            styleCaptions();
+        });
+
     };
 
     this.element = function () {
@@ -186,9 +193,8 @@ const CaptionsRenderer = function (viewModel) {
             _model.once('change:containerHeight', _setFontScale, this);
             return;
         }
-
         // Adjust scale based on font size relative to the default
-        _fontScale = _defaults.fontScale * _options.fontSize / _defaults.fontSize;
+        _fontScale = _defaults.fontScale * (_options.userFontScale || 1) * _options.fontSize / _defaults.fontSize;
     }
 
     function _setFontSize() {
@@ -200,7 +206,7 @@ const CaptionsRenderer = function (viewModel) {
 
         let fontSize;
         if (_model.get('fullscreen') && OS.iOS) {
-            fontSize = 'inherit';
+            fontSize = null;
         } else {
             // round to 1dp to match browser precision
             const containerFontSize = height * _fontScale;
@@ -273,8 +279,16 @@ const CaptionsRenderer = function (viewModel) {
 
     function _setShadowDOMFontSize(playerId, fontSize) {
         // Set Shadow DOM font size (needs to be important to override browser's in line style)
-        _windowStyle.fontSize = fontSize + 'px';
-        css('#' + playerId + ' .jw-video::-webkit-media-text-track-display', _windowStyle, playerId, true);
+        const selector = `#${playerId} .jw-video::-webkit-media-text-track-display`;
+        if (fontSize) {
+            fontSize += 'px';
+            if (OS.iOS) {
+                // Force layout after exiting fullscreen
+                css(selector, { fontSize: 'inherit' }, playerId, true);
+            }
+        }
+        _windowStyle.fontSize = fontSize;
+        css(selector, _windowStyle, playerId, true);
     }
 
     function _addTextStyle(textStyle, options) {
@@ -313,7 +327,7 @@ const CaptionsRenderer = function (viewModel) {
 
     function _addEdgeStyle(option, styles, fontOpacity) {
         const color = getRgba('#000000', fontOpacity);
-        if (option === 'dropshadow') { // small drop shadow
+        if (option === 'dropShadow') { // small drop shadow
             styles.textShadow = '0 2px 1px ' + color;
         } else if (option === 'raised') { // larger drop shadow
             styles.textShadow = '0 0 5px ' + color + ', 0 1px 5px ' + color + ', 0 2px 5px ' + color;

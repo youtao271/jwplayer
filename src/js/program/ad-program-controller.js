@@ -14,28 +14,29 @@ export default class AdProgramController extends ProgramController {
 
         adModel.mediaModel.attributes.mediaType = 'video';
 
-        // Ad plugins must use only one element, and must use the same element during playback of an item
-        // (i.e. prerolls, midrolls, and postrolls must use the same tag)
-        let mediaElement;
-        if (this.backgroundLoading) {
-            // The media pool has reserves an element for ads to use. It is reserved on setup and is not used by other media
-            mediaElement = mediaPool.getAdElement();
-        } else {
-            // Take the tag that we're using to play the current item. The tag has been freed before reaching this point
-            mediaElement = model.get('mediaElement');
+        if (!__HEADLESS__) {
+            // Ad plugins must use only one element, and must use the same element during playback of an item
+            // (i.e. prerolls, midrolls, and postrolls must use the same tag)
+            let mediaElement;
+            if (this.backgroundLoading) {
+                mediaElement = mediaPool.getAdElement();
+            } else {
+                // Take the tag that we're using to play the current item. The tag has been freed before reaching this point
+                mediaElement = model.get('mediaElement');
 
-            adModel.attributes.mediaElement = mediaElement;
-            adModel.attributes.mediaSrc = mediaElement.src;
+                adModel.attributes.mediaElement = mediaElement;
+                adModel.attributes.mediaSrc = mediaElement.src;
 
-            // Listen to media element for events that indicate src was reset or load() was called
-            const srcResetListener = this.srcResetListener = () => {
-                this.srcReset();
-            };
-            mediaElement.addEventListener('emptied', srcResetListener);
-            mediaElement.playbackRate = mediaElement.defaultPlaybackRate = 1;
+                // Listen to media element for events that indicate src was reset or load() was called
+                const srcResetListener = this.srcResetListener = () => {
+                    this.srcReset();
+                };
+                mediaElement.addEventListener('emptied', srcResetListener);
+                mediaElement.playbackRate = mediaElement.defaultPlaybackRate = 1;
+            }
+
+            this.mediaPool = SharedMediaPool(mediaElement, mediaPool);
         }
-
-        this.mediaPool = SharedMediaPool(mediaElement, mediaPool);
     }
 
     setup() {
@@ -62,23 +63,24 @@ export default class AdProgramController extends ProgramController {
             this.trigger(ERROR, data);
         }, this);
 
-        if (!primedElement.paused) {
-            primedElement.pause();
+        if (!__HEADLESS__) {
+            if (!primedElement.paused) {
+                primedElement.pause();
+            }
         }
     }
 
     setActiveItem(index) {
         this.stopVideo();
         this.provider = null;
-        super.setActiveItem(index)
+        return super.setActiveItem(index)
             .then((mediaController) => {
                 this._setProvider(mediaController.provider);
+                return this.playVideo();
             });
-        return this.playVideo();
     }
 
     usePsuedoProvider(provider) {
-        this.provider = provider;
         if (!provider) {
             return;
         }
@@ -96,7 +98,7 @@ export default class AdProgramController extends ProgramController {
         if (!provider || !this.mediaPool) {
             return;
         }
-
+        this.provider = provider;
         const { model, playerModel } = this;
         const isVpaidProvider = provider.type === 'vpaid';
 
@@ -110,7 +112,7 @@ export default class AdProgramController extends ProgramController {
 
         const adMediaModelContext = model.mediaModel;
         provider.on(PLAYER_STATE, (event) => {
-            event.oldstate = model.get(PLAYER_STATE);
+            event.oldstate = event.oldstate || model.get(PLAYER_STATE);
             adMediaModelContext.set('mediaState', event.newstate);
         });
         provider.on(NATIVE_FULLSCREEN, this._nativeFullscreenHandler, this);
@@ -118,6 +120,10 @@ export default class AdProgramController extends ProgramController {
             this._stateHandler(state);
         });
         provider.attachMedia();
+        if (__HEADLESS__) {
+            const mediaContainer = playerModel.get('mediaContainer');
+            provider.setContainer(mediaContainer);
+        }
         provider.volume(playerModel.get('volume'));
         provider.mute(playerModel.getMute());
         if (provider.setPlaybackRate) {
@@ -141,8 +147,20 @@ export default class AdProgramController extends ProgramController {
     }
 
     destroy() {
-        const { model, mediaPool, playerModel } = this;
+        const { mediaController, model, mediaPool, playerModel } = this;
         model.off();
+
+        if (__HEADLESS__) {
+            if (this.provider) {
+                this.provider.remove();
+                this.provider = null;
+                mediaController.destroy();
+            }
+            return;
+        }
+
+        // Do not destroy or remove provider event listeners since non-linear ads may continue to run after this point
+        this.provider = null;
 
         // We only use one media element from ads; getPrimedElement will return it
         const mediaElement = mediaPool.getPrimedElement();
@@ -198,7 +216,7 @@ export default class AdProgramController extends ProgramController {
     set mute(mute) {
         const { mediaController, model, provider } = this;
         model.set('mute', mute);
-        super.mute = mute;
+        super.setMute(mute);
         if (!mediaController) {
             provider.mute(mute);
         }
@@ -207,7 +225,7 @@ export default class AdProgramController extends ProgramController {
     set volume(volume) {
         const { mediaController, model, provider } = this;
         model.set('volume', volume);
-        super.volume = volume;
+        super.setVolume(volume);
         if (!mediaController) {
             provider.volume(volume);
         }

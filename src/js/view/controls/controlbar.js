@@ -6,7 +6,6 @@ import TimeSlider from 'view/controls/components/timeslider';
 import VolumeTooltipIcon from 'view/controls/components/volumetooltipicon';
 import button from 'view/controls/components/button';
 import { SimpleTooltip } from 'view/controls/components/simple-tooltip';
-import ariaLabel from 'utils/aria';
 import Events from 'utils/backbone.events';
 import { prependChild, setAttribute, toggleClass, openLink } from 'utils/dom';
 import { timeFormat } from 'utils/parser';
@@ -15,10 +14,11 @@ import { genId, FEED_SHOWN_ID_LENGTH } from 'utils/random-id-generator';
 
 function text(name, role) {
     const element = document.createElement('span');
-    element.className = 'jw-text jw-reset ' + name;
+    element.className = 'jw-text jw-reset-text ' + name;
     if (role) {
         setAttribute(element, 'role', role);
     }
+    setAttribute(element, 'dir', 'auto');
     return element;
 }
 
@@ -38,7 +38,6 @@ function div(classes) {
 }
 
 function createCastButton(castToggle, localization) {
-
     if (Browser.safari) {
         const airplayButton = button(
             'jw-icon-airplay jw-off',
@@ -49,45 +48,24 @@ function createCastButton(castToggle, localization) {
         SimpleTooltip(airplayButton.element(), 'airplay', localization.airplay);
 
         return airplayButton;
+    } else if (Browser.chrome && window.chrome) {
+        const castLauncher = document.createElement('google-cast-launcher');
+        setAttribute(castLauncher, 'tabindex', '-1');
+        castLauncher.className += ' jw-reset';
+        const castButton = button(
+            'jw-icon-cast',
+            null,
+            localization.cast);
+        castButton.ui.off();
+        const element = castButton.element();
+        element.style.cursor = 'pointer';
+        element.appendChild(castLauncher);
+        castButton.button = castLauncher;
+
+        SimpleTooltip(element, 'chromecast', localization.cast);
+
+        return castButton;
     }
-
-    if (!Browser.chrome || OS.iOS) {
-        return;
-    }
-
-
-    const castButton = document.createElement('google-cast-launcher');
-    setAttribute(castButton, 'tabindex', '-1');
-    castButton.className += ' jw-reset';
-
-    const element = document.createElement('div');
-    element.className = 'jw-reset jw-icon jw-icon-inline jw-icon-cast jw-button-color';
-    element.style.display = 'none';
-    element.style.cursor = 'pointer';
-    element.appendChild(castButton);
-    ariaLabel(element, localization.cast);
-
-    SimpleTooltip(element, 'chromecast', localization.cast);
-
-    return {
-        element: function() {
-            return element;
-        },
-        toggle: function(m) {
-            if (m) {
-                this.show();
-            } else {
-                this.hide();
-            }
-        },
-        show: function() {
-            element.style.display = '';
-        },
-        hide: function() {
-            element.style.display = 'none';
-        },
-        button: castButton
-    };
 }
 
 function reasonInteraction() {
@@ -136,10 +114,11 @@ export default class Controlbar {
 
             const volumeButtonEl = volumeGroup.element();
             menus.push(volumeGroup);
-            setAttribute(volumeButtonEl, 'role', 'button');
+            // Use 'group' role so that voiceover identifies volume slider and button
+            setAttribute(volumeButtonEl, 'role', 'group');
             _model.change('mute', (model, muted) => {
                 const muteText = muted ? localization.unmute : localization.mute;
-                setAttribute(volumeButtonEl, 'aria-label', muteText);
+                setAttribute(volumeButtonEl, 'aria-label', muteText + ' button');
             }, this);
         } else if (!_model.get('sdkplatform') && !(OS.iOS && OS.version.major < 10)) {
             // Do not show the volume toggle in the mobile SDKs or <iOS10
@@ -158,11 +137,13 @@ export default class Controlbar {
             this.trigger('settingsInteraction', 'quality', true, event);
         }, localization.settings, cloneIcons('settings'));
         setAttribute(settingsButton.element(), 'aria-haspopup', 'true');
+        setAttribute(settingsButton.element(), 'aria-controls', 'jw-settings-menu');
 
         const captionsButton = button('jw-icon-cc jw-settings-submenu-button', (event) => {
             this.trigger('settingsInteraction', 'captions', false, event);
         }, localization.cc, cloneIcons('cc-off,cc-on'));
         setAttribute(captionsButton.element(), 'aria-haspopup', 'true');
+        setAttribute(captionsButton.element(), 'aria-controls', 'jw-settings-submenu-captions');
 
         const liveButton = button('jw-text-live', () => {
             this.goToLiveEdge();
@@ -301,7 +282,7 @@ export default class Controlbar {
             // jw-dvr-live: Player is in DVR mode but not at the live edge.
             toggleClass(liveElement, 'jw-dvr-live', dvrNotLive);
             setAttribute(liveElement, 'aria-label', dvrNotLive ? notLive : liveBroadcast);
-            liveElement.textContent = liveBroadcast;
+            liveElement.textContent = dvrNotLive ? notLive : liveBroadcast;
         }, this);
         _model.change('altText', this.setAltText, this);
         _model.change('customButtons', this.updateButtons, this);
@@ -338,7 +319,7 @@ export default class Controlbar {
         }
 
         if (elements.cast && elements.cast.button) {
-            const castUi = new UI(elements.cast.element()).on('click tap enter', function(evt) {
+            const castUi = elements.cast.ui.on('click tap enter', function(evt) {
                 // controlbar cast button needs to manually trigger a click
                 // on the native cast button for taps and enter key
                 if (evt.type !== 'click') {
@@ -486,7 +467,7 @@ export default class Controlbar {
         const localization = model.get('localization');
         let label = localization.play;
         this.setPlayText(label);
-        
+
         if (state === STATE_PLAYING) {
             if (model.get('streamType') !== 'LIVE') {
                 label = localization.pause;
@@ -504,7 +485,9 @@ export default class Controlbar {
         const dvrMode = streamType === 'DVR';
 
         // Hide rewind button when in LIVE mode
-        this.elements.rewind.toggle(!liveMode);
+        if (this.elements.rewind) {
+            this.elements.rewind.toggle(!liveMode);
+        }
 
         this.elements.live.toggle(liveMode || dvrMode);
         setAttribute(this.elements.live.element(), 'tabindex', liveMode ? '-1' : '0');

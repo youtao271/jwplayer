@@ -35,6 +35,7 @@ const Captions = function(_model) {
                 /* eslint-disable no-loop-func */
                 const track = tracks[i];
                 if (_kindSupported(track.kind) && !_tracksById[track._id]) {
+                    track.sideloaded = true;
                     _addTrack(track);
                     loadFile(track, (vttCues) => {
                         _addVTTCuesToTrack(track, vttCues);
@@ -57,16 +58,22 @@ const Captions = function(_model) {
     }, this);
 
     function _setSubtitlesTracks(tracks) {
-        if (!tracks.length) {
+        if (!Array.isArray(tracks)) {
             return;
         }
+        if (!tracks.length) {
+            _tracks = [];
+            _tracksById = {};
+            _unknownCount = 0;
+        } else {
+            for (let i = 0; i < tracks.length; i++) {
+                _addTrack(tracks[i]);
+            }
 
-        for (let i = 0; i < tracks.length; i++) {
-            _addTrack(tracks[i]);
+            // To avoid duplicate tracks in the menu when we reuse an _id, regenerate the tracks array
+            const allTracks = Object.keys(_tracksById).map(id => _tracksById[id]);
+            _tracks = allTracks.filter(track => !track.sideloaded).concat(allTracks.filter(track => !!track.sideloaded));
         }
-
-        // To avoid duplicate tracks in the menu when we reuse an _id, regenerate the tracks array
-        _tracks = Object.keys(_tracksById).map(id => _tracksById[id]);
 
         _setCaptionsList();
     }
@@ -103,7 +110,8 @@ const Captions = function(_model) {
         for (let i = 0; i < _tracks.length; i++) {
             list.push({
                 id: _tracks[i]._id,
-                label: _tracks[i].name || 'Unknown CC'
+                label: _tracks[i].name || 'Unknown CC',
+                language: _tracks[i].language,
             });
         }
         return list;
@@ -146,8 +154,8 @@ const Captions = function(_model) {
     function _setCaptionsList() {
         const captionsList = _captionsMenu();
         if (listIdentity(captionsList) !== listIdentity(_model.get('captionsList'))) {
-            _selectDefaultIndex(_defaultIndex);
             _model.set('captionsList', captionsList);
+            _selectDefaultIndex(_defaultIndex);
         }
     }
 

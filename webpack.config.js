@@ -12,7 +12,8 @@ const licensesNotice = require('./jwplayer.license.notice.js');
 const compileConstants = {
     __SELF_HOSTED__: true,
     __REPO__: `''`,
-    __DEBUG__: true,
+    __DEBUG__: false,
+    __HEADLESS__: false,
     __BUILD_VERSION__: `'${getBuildVersion()}'`,
     __FLASH_VERSION__: 18
 };
@@ -38,7 +39,8 @@ const webpackConfig = {
             'src/js/',
             'src',
             'node_modules'
-        ]
+        ],
+        extensions: ['.ts', '.js']
     },
     module: {
         strictExportPresence: true,
@@ -69,13 +71,18 @@ const webpackConfig = {
                 loader: 'svg-inline-loader'
             },
             {
-                test: /\.js$/,
+                test: /\.(?:ts|js)$/,
                 exclude: /\/node_modules\//,
                 use: {
                     loader: 'babel-loader',
                     options: {
                         babelrc: false,
-                        presets: ['@babel/preset-env'],
+                        presets: [
+                            ['@babel/preset-env', { loose: true, modules: false }],
+                            ['@babel/preset-typescript', {
+                                onlyRemoveTypeImports: true
+                            }]
+                        ],
                         plugins: [
                             {
                                 visitor: {

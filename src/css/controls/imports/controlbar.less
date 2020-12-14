@@ -19,6 +19,12 @@
     transition-property: opacity, visibility;
     transition-delay: 0s;
 
+    .jw-flag-touch.jw-breakpoint-0 & {
+        .jw-icon-inline {
+            height: 40px;
+        }
+    }
+
     .jw-breakpoint-7 & {
         max-height: 140px;
 
@@ -43,7 +49,7 @@
                 }
             }
 
-            .jw-icon-inline,
+            .jw-icon-inline:not(.jw-text-live),
             .jw-icon-volume {
                 .square(60px);
 
@@ -82,6 +88,8 @@
 }
 
 .jw-button-container {
+    display: -webkit-box;
+    display: -webkit-flex;
     display: flex;
     flex-flow: row nowrap;
     flex: 1 1 auto;

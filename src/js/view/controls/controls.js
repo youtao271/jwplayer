@@ -9,18 +9,23 @@ import Controlbar from 'view/controls/controlbar';
 import DisplayContainer from 'view/controls/display-container';
 import NextUpToolTip from 'view/controls/nextuptooltip';
 import RightClick from 'view/controls/rightclick';
-import { createSettingsMenu, setupSubmenuListeners } from 'view/controls/settings-menu';
+import SettingsMenu from 'view/controls/components/menu/settings-menu.js';
 import { getBreakpoint } from 'view/utils/breakpoint';
 import { cloneIcon } from 'view/controls/icons';
 import ErrorContainer from 'view/error-container';
 import instances from 'api/players';
 import InfoOverlay from 'view/controls/info-overlay';
 import ShortcutsTooltip from 'view/controls/shortcuts-tooltip';
-import FloatingCloseButton from 'view/floating-close-button';
+import FloatingCloseButton from 'view/floating/floating-close-button';
 
 require('css/controls.less');
 
+// Allows preventScrolling focus option on IE/Safari.
+require('focus-options-polyfill');
+
 const ACTIVE_TIMEOUT = OS.mobile ? 4000 : 2000;
+// Keys which bypass keyboard shortcuts being off
+const ALWAYS_ALLOWED_KEYS = [27];
 
 ErrorContainer.cloneIcon = cloneIcon;
 instances.forEach(api => {
@@ -32,7 +37,7 @@ instances.forEach(api => {
     }
 });
 
-const reasonInteraction = function() {
+const reasonInteraction = function () {
     return { reason: 'interaction' };
 };
 export default class Controls extends Events {
@@ -100,6 +105,14 @@ export default class Controls extends Events {
 
         const touchMode = model.get('touchMode');
 
+        this.focusPlayerElement = () => {
+            if (model.get('isFloating')) {
+                this.wrapperElement.querySelector('video').focus({ preventScroll: true });
+            } else {
+                this.playerContainer.focus({ preventScroll: true });
+            }
+        };
+
         // Display Buttons
         if (!this.displayContainer) {
             const displayContainer = new DisplayContainer(model, api);
@@ -108,6 +121,7 @@ export default class Controls extends Events {
                 this.trigger(DISPLAY_CLICK);
                 this.userActive(1000);
                 api.playToggle(reasonInteraction());
+                this.focusPlayerElement();
             });
 
             this.div.appendChild(displayContainer.element());
@@ -120,11 +134,17 @@ export default class Controls extends Events {
             if (visible) {
                 //  Focus modal close button on open
                 this.div.querySelector('.jw-info-close').focus();
+            } else {
+                this.focusPlayerElement();
             }
         });
         //  Add keyboard shortcuts if not on mobi;e
         if (!OS.mobile) {
-            this.shortcutsTooltip = new ShortcutsTooltip(this.wrapperElement, api, model);
+            this.shortcutsTooltip = new ShortcutsTooltip(this.wrapperElement, api, model, visible => {
+                if (!visible) {
+                    this.focusPlayerElement();
+                }
+            });
         }
         this.rightClickMenu = new RightClick(this.infoOverlay, this.shortcutsTooltip);
         if (touchMode) {
@@ -156,7 +176,11 @@ export default class Controls extends Events {
         // Controlbar
         const controlbar = this.controlbar = new Controlbar(api, model,
             this.playerContainer.querySelector('.jw-hidden-accessibility'));
-        controlbar.on(USER_ACTION, () => this.userActive());
+        controlbar.on(USER_ACTION, () => {
+            this.off('userInactive', this.focusPlayerElement, this);
+            this.once('userInactive', this.focusPlayerElement, this);
+            this.userActive();
+        });
         controlbar.on('nextShown', function (data) {
             this.trigger('nextShown', data);
         }, this);
@@ -175,14 +199,18 @@ export default class Controls extends Events {
 
         this.div.appendChild(controlbar.element());
 
-        // Settings Menu
+        const localization = model.get('localization');
+        const settingsMenu = this.settingsMenu = new SettingsMenu(api, model.player, this.controlbar, localization);
         let lastState = null;
-        const visibilityChangeHandler = (visible, evt) => {
+
+        settingsMenu.on('menuVisibility', ({ visible, evt }) => {
             const state = model.get('state');
             const settingsInteraction = { reason: 'settingsInteraction' };
+            const settingsButton = this.controlbar.elements.settingsButton;
             const isKeyEvent = (evt && evt.sourceEvent || evt || {}).type === 'keydown';
-
-            toggleClass(this.div, 'jw-settings-open', visible);
+            const activeTimeout = (visible || isKeyEvent) ? 0 : ACTIVE_TIMEOUT;
+            // Trigger userActive so that a dismissive click outside the player can hide the controlbar
+            this.userActive(activeTimeout);
             if (getBreakpoint(model.get('containerWidth')) < 2) {
                 if (visible && state === STATE_PLAYING) {
                     // Pause playback on open if we're currently playing
@@ -192,29 +220,26 @@ export default class Controls extends Events {
                     api.play(settingsInteraction);
                 }
             }
-
-            // Trigger userActive so that a dismissive click outside the player can hide the controlbar
-            const activeTimeout = (visible || isKeyEvent) ? 0 : ACTIVE_TIMEOUT;
-            this.userActive(activeTimeout);
             lastState = state;
-
-            const settingsButton = this.controlbar.elements.settingsButton;
             if (!visible && isKeyEvent && settingsButton) {
                 settingsButton.element().focus();
+            } else if (evt) {
+                this.focusPlayerElement();
             }
-        };
-        const settingsMenu = this.settingsMenu = createSettingsMenu(
-            controlbar,
-            visibilityChangeHandler,
-            model.get('localization')
-        );
-        setupSubmenuListeners(settingsMenu, controlbar, model, api);
+        });
+        settingsMenu.on('captionStylesOpened', () => this.trigger('captionStylesOpened'));
+        controlbar.on('settingsInteraction', (submenuName, isDefault, event) => {
+            if (isDefault) {
+                return settingsMenu.defaultChild.toggle(event, true);
+            }
+            settingsMenu.children[submenuName].toggle(event);
+        });
 
         if (OS.mobile) {
-            this.div.appendChild(settingsMenu.element());
+            this.div.appendChild(settingsMenu.el);
         } else {
             this.playerContainer.setAttribute('aria-describedby', 'jw-shortcuts-tooltip-explanation');
-            this.div.insertBefore(settingsMenu.element(), controlbar.element());
+            this.div.insertBefore(settingsMenu.el, controlbar.element());
         }
 
         // Unmute Autoplay behavior.
@@ -274,8 +299,14 @@ export default class Controls extends Events {
                 // Let event bubble upwards
                 return true;
             }
-            const menuHidden = !this.settingsMenu.visible;
+            const menuHidden = !this.settingsMenu || !this.settingsMenu.visible;
+            const shortcutsEnabled = model.get('enableShortcuts') === true;
             const adMode = this.instreamState;
+
+            if (!shortcutsEnabled && ALWAYS_ALLOWED_KEYS.indexOf(evt.keyCode) === -1) {
+                return;
+            }
+
             switch (evt.keyCode) {
                 case 27: // Esc
                     if (model.get('fullscreen')) {
@@ -302,42 +333,46 @@ export default class Controls extends Events {
                     break;
                 case 13: // enter
                 case 32: // space
+                    if (document.activeElement.classList.contains('jw-switch') && evt.keyCode === 13) {
+                        // Let event bubble up so the spacebar can control the toggle if focused on
+                        return true;
+                    }
                     api.playToggle(reasonInteraction());
                     break;
-                case 37: // left-arrow, if not adMode and settings menu is hidden
+                case 37: // left-arrow, if shortcuts are enabled, not adMode, and settings menu is hidden
                     if (!adMode && menuHidden) {
                         adjustSeek(-5);
                     }
                     break;
-                case 39: // right-arrow, if not adMode and settings menu is hidden
+                case 39: // right-arrow, if shortcuts are enabled, not adMode, and settings menu is hidden
                     if (!adMode && menuHidden) {
                         adjustSeek(5);
                     }
                     break;
-                case 38: // up-arrow, if settings menu is hidden
+                case 38: // up-arrow, if shortcuts are enabled and settings menu is hidden
                     if (menuHidden) {
                         adjustVolume(10);
                     }
                     break;
-                case 40: // down-arrow, if settings menu is hidden
+                case 40: // down-arrow, if shortcuts are enabled and settings menu is hidden
                     if (menuHidden) {
                         adjustVolume(-10);
                     }
                     break;
-                case 67: // c-key
-                    {
-                        const captionsList = api.getCaptionsList();
-                        const listLength = captionsList.length;
-                        if (listLength) {
-                            const nextIndex = (api.getCurrentCaptions() + 1) % listLength;
-                            api.setCurrentCaptions(nextIndex);
-                        }
+                case 67: {
+                    // c-key, if shortcuts are enabled
+                    const captionsList = api.getCaptionsList();
+                    const listLength = captionsList.length;
+                    if (listLength) {
+                        const nextIndex = (api.getCurrentCaptions() + 1) % listLength;
+                        api.setCurrentCaptions(nextIndex);
                     }
                     break;
-                case 77: // m-key
+                }
+                case 77: // m-key, if shortcuts are enabled
                     api.setMute();
                     break;
-                case 70: // f-key
+                case 70: // f-key, if shortcuts are enabled
                     api.setFullscreen();
                     break;
                 case 191: // ? key
@@ -363,13 +398,20 @@ export default class Controls extends Events {
         this.playerContainer.addEventListener('keydown', handleKeydown);
         this.keydownCallback = handleKeydown;
 
-        // keep controls active when navigating inside the player
         const handleKeyup = (evt) => {
-            const isTab = evt.keyCode === 9;
-            if (isTab) {
-                const insideContainer = this.playerContainer.contains(evt.target);
-                const activeTimeout = insideContainer ? 0 : ACTIVE_TIMEOUT;
-                this.userActive(activeTimeout);
+            switch (evt.keyCode) {
+                case 9: {
+                    // tab, keep controls active when navigating inside the player
+                    const insideContainer = this.playerContainer.contains(evt.target);
+                    const activeTimeout = insideContainer ? 0 : ACTIVE_TIMEOUT;
+                    this.userActive(activeTimeout);
+                    break;
+                }
+                case 32: // space
+                    evt.preventDefault();
+                    break;
+                default:
+                    break;
             }
         };
         this.playerContainer.addEventListener('keyup', handleKeyup);
@@ -377,6 +419,7 @@ export default class Controls extends Events {
 
         // Hide controls when focus leaves the player
         const blurCallback = (evt) => {
+            this.off('userInactive', this.focusPlayerElement, this);
             const focusedElement = evt.relatedTarget || document.querySelector(':focus');
             if (!focusedElement) {
                 return;
@@ -420,7 +463,16 @@ export default class Controls extends Events {
     }
 
     disable(model) {
-        const { nextUpToolTip, settingsMenu, infoOverlay, controlbar, rightClickMenu, playerContainer, div } = this;
+        const {
+            nextUpToolTip,
+            settingsMenu,
+            infoOverlay,
+            controlbar,
+            rightClickMenu,
+            shortcutsTooltip,
+            playerContainer,
+            div
+        } = this;
 
         clearTimeout(this.activeTimeout);
         this.activeTimeout = -1;
@@ -469,11 +521,14 @@ export default class Controls extends Events {
 
         if (settingsMenu) {
             settingsMenu.destroy();
-            div.removeChild(settingsMenu.element());
         }
 
         if (infoOverlay) {
             infoOverlay.destroy();
+        }
+
+        if (shortcutsTooltip) {
+            shortcutsTooltip.destroy();
         }
 
         this.removeBackdrop();

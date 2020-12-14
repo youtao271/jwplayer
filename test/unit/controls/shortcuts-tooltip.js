@@ -8,8 +8,8 @@ require('css/controls/imports/shortcuts-tooltip.less');
 
 describe('Keyboard Shortcuts Modal Test', function() {
     function isHidden (el) {
-        var style = window.getComputedStyle(el);
-        return (style.display === 'none')
+        let style = window.getComputedStyle(el);
+        return (style.display === 'none');
     }
     function isVisible (el) {
         return !isHidden(el);
@@ -18,13 +18,15 @@ describe('Keyboard Shortcuts Modal Test', function() {
     const api = new MockApi();
     let player;
     let shortcutsTooltip;
-    beforeEach(function(){
+    let visHandle;
+    beforeEach(function() {
         player = document.createElement('div');
         player.classList.add('jwplayer');
         model.setup({});
         api.play = sinon.spy();
         api.pause = sinon.spy();
-        shortcutsTooltip = new ShortcutsTooltip(player, api, model);
+        visHandle = sinon.spy();
+        shortcutsTooltip = new ShortcutsTooltip(player, api, model, visHandle);
         document.body.appendChild(player);
     });
     afterEach(function() {
@@ -36,12 +38,12 @@ describe('Keyboard Shortcuts Modal Test', function() {
     });
     it('should be hidden initially', function() {
         const isInitiallyHidden = isHidden(shortcutsTooltip.el);
-        expect(isInitiallyHidden).to.equal(true)
-    })
+        expect(isInitiallyHidden).to.equal(true);
+    });
     it('should be visible when open', function() {
         shortcutsTooltip.open();
-        const isVisibleAfterOpening = isVisible(shortcutsTooltip.el)
-        expect(isVisibleAfterOpening).to.equal(true)
+        const isVisibleAfterOpening = isVisible(shortcutsTooltip.el);
+        expect(isVisibleAfterOpening).to.equal(true);
     });
     it('should be hidden when closed', function() {
         api.play();
@@ -57,7 +59,7 @@ describe('Keyboard Shortcuts Modal Test', function() {
         const isVisibleAfterFirstToggle = isVisible(shortcutsTooltip.el);
         shortcutsTooltip.toggleVisibility();
         const isHiddenAfterSecondToggle = isHidden(shortcutsTooltip.el);
-        
+
         isTogglingWorking = isInitiallyHidden && isVisibleAfterFirstToggle && isHiddenAfterSecondToggle;
         expect(isTogglingWorking).to.equal(true);
     });
@@ -68,12 +70,20 @@ describe('Keyboard Shortcuts Modal Test', function() {
     });
     it('pauses video when openened', function() {
         shortcutsTooltip.open();
-        expect(api.pause.calledOnce).to.equal(true)
+        expect(api.pause.calledOnce).to.equal(true);
     });
     it('plays video when closed', function() {
         model.set('state', STATE_PLAYING);
         shortcutsTooltip.open();
         shortcutsTooltip.close();
         expect(api.play.calledOnce).to.equal(true);
+    });
+    it('should call vis handler with proper args when opened', () => {
+        shortcutsTooltip.open();
+        expect(visHandle.calledWith(true)).to.be.true;
+    });
+    it('should call vis handler with proper args when closed', () => {
+        shortcutsTooltip.close();
+        expect(visHandle.calledWith(false)).to.be.true;
     });
 });

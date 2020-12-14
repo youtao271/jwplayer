@@ -32,6 +32,7 @@ const InstreamAdapter = function(_controller, _model, _view, _mediaPool) {
     let _arrayOptions;
     let _arrayIndex = 0;
     let _data = {};
+    let _detachPromise = null;
     let _options = {};
     let _skipAd = _instreamItemNext;
     let _backgroundLoadTriggered = false;
@@ -96,20 +97,24 @@ const InstreamAdapter = function(_controller, _model, _view, _mediaPool) {
         _adProgram.on(PLAYER_STATE, _handleStateChange, this);
 
         // Make sure the original player's provider stops broadcasting events (pseudo-lock...)
-        _controller.detachMedia();
+        _detachPromise = _controller.detachMedia();
 
-        const mediaElement = _adProgram.primedElement;
-        const mediaContainer = _model.get('mediaContainer');
-        mediaContainer.appendChild(mediaElement);
+        if (!__HEADLESS__) {
+            const mediaElement = _adProgram.primedElement;
+            const mediaContainer = _model.get('mediaContainer');
+            mediaContainer.appendChild(mediaElement);
+        }
 
         // This enters the player into instream mode
         _model.set('instream', _adProgram);
         _adProgram.model.set('state', STATE_BUFFERING);
 
         // don't trigger api play/pause on display click
-        const clickHandler = _view.clickHandler();
-        if (clickHandler) {
-            clickHandler.setAlternateClickHandlers(() => {}, null);
+        if (_view) {
+            const clickHandler = _view.clickHandler();
+            if (clickHandler) {
+                clickHandler.setAlternateClickHandlers(() => {}, null);
+            }
         }
 
         this.setText(_model.get('localization').loadingAd);
@@ -143,6 +148,9 @@ const InstreamAdapter = function(_controller, _model, _view, _mediaPool) {
     };
 
     function _addClickHandler(clickThroughUrl) {
+        if (!_view) {
+            return;
+        }
         // don't trigger api play/pause on display click
         const clickHandler = _view.clickHandler();
         if (clickHandler) {
@@ -190,9 +198,7 @@ const InstreamAdapter = function(_controller, _model, _view, _mediaPool) {
         this.trigger(type, data);
 
         if (type === 'mediaError' || type === 'error') {
-            if (_array && _arrayIndex + 1 < _array.length) {
-                _loadNextItem();
-            }
+            this.loadNextItemOnError();
         }
     }
 
@@ -286,6 +292,16 @@ const InstreamAdapter = function(_controller, _model, _view, _mediaPool) {
     }
 
     /**
+     * Called when an error occurs to load the next instream ad if it exists.
+     * @return {void}
+     */
+    this.loadNextItemOnError = function() {
+        if (_array && _arrayIndex + 1 < _array.length) {
+            _loadNextItem();
+        }
+    };
+
+    /**
      * Load an Item, playing it as an insteam ad.
      * @param {Item|Array.<Item>} item - The ad item or ad pod array of items to be played.
      * @param {Object|Array.<Object>} options - The ad options or ad pod array of options.
@@ -310,6 +326,14 @@ const InstreamAdapter = function(_controller, _model, _view, _mediaPool) {
             playlist = [item];
         }
 
+        if (__HEADLESS__) {
+            playlist = playlist.map(playlistItem => {
+                const newItem = Object.assign({}, playlistItem);
+                delete newItem.vastAd;
+                return newItem;
+            });
+        }
+
         const adModel = _adProgram.model;
         adModel.set('playlist', playlist);
         _model.set('hideAdsControls', false);
@@ -328,11 +352,15 @@ const InstreamAdapter = function(_controller, _model, _view, _mediaPool) {
 
         adModel.set('skipButton', false);
 
-        const playPromise = _adProgram.setActiveItem(_arrayIndex);
+        // Await detachment if video tag is shared.
+        const playPromise = !_model.get('backgroundLoading') && _detachPromise
+            ? _detachPromise.then(() => _adProgram.setActiveItem(_arrayIndex))
+            : _adProgram.setActiveItem(_arrayIndex);
 
         _backgroundLoadTriggered = false;
+        // Need to use item.skipoffset since _options is undefined for subsequent ads in pods
         _skipOffset = item.skipoffset || _options.skipoffset;
-        if (_skipOffset) {
+        if (_skipOffset !== undefined) {
             _this.setupSkipButton(_skipOffset, _options);
         }
         return playPromise;
@@ -388,7 +416,7 @@ const InstreamAdapter = function(_controller, _model, _view, _mediaPool) {
     };
 
     function _setDefaultClickHandler() {
-        if (_destroyed) {
+        if (_destroyed || !_view) {
             return;
         }
         // start listening for ad click
@@ -403,6 +431,16 @@ const InstreamAdapter = function(_controller, _model, _view, _mediaPool) {
      * @return {void}
      */
     this.skipAd = function(event) {
+        const autoPauseAds = _model.get('autoPause').pauseAds;
+        const didAutostart = _model.get('playReason') === 'autostart';
+        const viewable = _model.get('viewable');
+        if (autoPauseAds && !didAutostart && !viewable) {
+            // If autoPause.pauseAds is enabled and player is not viewable
+            // when skipAd() is called, do not resume playback unless player
+            // was autostarted out of view and never came in to view
+            this.noResume = true;
+        }
+
         const skipAdType = AD_SKIPPED;
         this.trigger(skipAdType, event);
         _skipAd.call(this, {
@@ -412,7 +450,7 @@ const InstreamAdapter = function(_controller, _model, _view, _mediaPool) {
 
     function _instreamMeta(evt) {
         // If we're getting video dimension metadata from the provider, allow the view to resize the media
-        if (evt.width && evt.height) {
+        if (evt.width && evt.height && _view) {
             _view.resizeMedia();
         }
     }
@@ -442,7 +480,7 @@ const InstreamAdapter = function(_controller, _model, _view, _mediaPool) {
         this.trigger('destroyed');
         this.off();
 
-        if (_view.clickHandler()) {
+        if (_view && _view.clickHandler()) {
             _view.clickHandler().revertAlternateClickHandlers();
         }
 
@@ -460,6 +498,7 @@ const InstreamAdapter = function(_controller, _model, _view, _mediaPool) {
 
         _adProgram = null;
         _data = { };
+        _detachPromise = null;
 
         if (!_inited || _model.attributes._destroyed) {
             return;
@@ -498,7 +537,7 @@ const InstreamAdapter = function(_controller, _model, _view, _mediaPool) {
      * @return {InstreamAdapter} - chainable
      */
     this.setText = function(text) {
-        if (_destroyed) {
+        if (_destroyed || !_view) {
             return this;
         }
         _view.setAltText(text || '');

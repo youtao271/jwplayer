@@ -42,6 +42,11 @@ display icons
     display: inline-block;
 }
 
+.jwplayer .jw-display-icon-container {
+    // float in case custom skin tries to override inline-block
+    float: left;
+}
+
 .jw-display-icon-container {
     display: inline-block;
     padding: (@mobile-touch-target * 0.125);
@@ -76,6 +81,12 @@ display icons
     .jw-display-icon-next,
     .jw-display-icon-rewind {
         display: none;
+    }
+
+    &.jw-flag-touch .jw-display .jw-icon,
+    &.jw-flag-touch .jw-display .jw-svg-icon {
+        z-index: 100;
+        position: relative;
     }
 
     .jw-display .jw-icon,

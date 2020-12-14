@@ -2,6 +2,9 @@ import { trim } from 'utils/strings';
 import { isString, contains, difference, isBoolean } from 'utils/underscore';
 import { Browser } from '../environment/environment';
 
+const DOMParser = window.DOMParser;
+
+let useDomParser = true;
 let parser;
 
 export function hasClass(element, searchClass) {
@@ -25,21 +28,18 @@ function appendHtml(element, html) {
     const fragment = document.createDocumentFragment();
     const nodes = htmlToParentElement(html).childNodes;
     for (let i = 0; i < nodes.length; i++) {
-        fragment.appendChild(nodes[i].cloneNode());
+        fragment.appendChild(nodes[i].cloneNode(true));
     }
     element.appendChild(fragment);
 }
 
 export function htmlToParentElement(html) {
-    if (!parser) {
-        parser = new DOMParser();
-    }
-    const parsedElement = parser.parseFromString(html, 'text/html').body;
+    const parsedElement = domParse(html);
 
     // Delete script nodes
     sanitizeScriptNodes(parsedElement);
     // Delete event handler attributes that could execute XSS JavaScript
-    const insecureElements = parsedElement.querySelectorAll('img,svg');
+    const insecureElements = parsedElement.querySelectorAll('*');
 
     for (let i = insecureElements.length; i--;) {
         const element = insecureElements[i];
@@ -49,8 +49,40 @@ export function htmlToParentElement(html) {
     return parsedElement;
 }
 
+function supportsHtmlParsing() {
+    // Firefox/Opera/IE throw errors on unsupported types
+    try {
+        // WebKit returns null on unsupported types
+        if (parser.parseFromString('', 'text/html')) {
+            // text/html parsing is natively supported
+            return true;
+        }
+    } catch (err) {/* noop */}
+    return false;
+}
+
+function domParse(html) {
+    if (!parser) {
+        parser = new DOMParser();
+        useDomParser = supportsHtmlParsing();
+    }
+    if (useDomParser) {
+        return parser.parseFromString(html, 'text/html').body;
+    }
+    const doc = document.implementation.createHTMLDocument('');
+    if (html.toLowerCase().indexOf('<!doctype') > -1) {
+        // eslint-disable-next-line no-unsanitized/property
+        doc.documentElement.innerHTML = html;
+    } else {
+        // eslint-disable-next-line no-unsanitized/property
+        doc.body.innerHTML = html;
+    }
+    return doc.body;
+}
+
+
 export function sanitizeScriptNodes(element) {
-    const nodes = element.querySelectorAll('script,object,iframe');
+    const nodes = element.querySelectorAll('script,object,iframe,meta');
     for (let i = nodes.length; i--;) {
         const node = nodes[i];
         node.parentNode.removeChild(node);
@@ -64,6 +96,12 @@ export function sanitizeElementAttributes(element) {
         const name = attributes[i].name;
         if (/^on/.test(name)) {
             element.removeAttribute(name);
+        }
+        if (/href/.test(name)) {
+            const link = attributes[i].value;
+            if (/javascript:|javascript&colon;/.test(link)) {
+                element.removeAttribute(name);
+            }
         }
     }
     return element;
@@ -223,4 +261,13 @@ export function openLink(link, target, additionalOptions = {}) {
     } else {
         a.click();
     }
+}
+
+export function deviceIsLandscape() {
+    const ort = window.screen.orientation;
+    const isLandscape = ort ?
+        ort.type === 'landscape-primary' || ort.type === 'landscape-secondary'
+        : false;
+
+    return isLandscape || (window.orientation === 90 || window.orientation === -90);
 }

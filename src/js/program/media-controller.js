@@ -21,7 +21,8 @@ export default class MediaController extends Events {
         this.provider = provider;
         this.providerListener = new ProviderListener(this);
         this.thenPlayPromise = cancelable(() => {});
-        addProviderListeners(this);
+        provider.off();
+        provider.on('all', this.providerListener, this);
         this.eventQueue = new ApiQueueDecorator(this, ['trigger'],
             () => !this.attached || this.background);
     }
@@ -106,8 +107,9 @@ export default class MediaController extends Events {
     detach() {
         const { provider } = this;
         this.thenPlayPromise.cancel();
-        provider.detachMedia();
+        const result = provider.detachMedia();
         this.attached = false;
+        return result;
     }
 
     // Extends the playPromise
@@ -196,16 +198,21 @@ export default class MediaController extends Events {
     }
 
     get background() {
-        const { container, provider } = this;
         // A backgrounded provider is attached to a video tag
         if (!this.attached) {
             return false;
         }
-        // A provider without a video tag cannot be backgrounded
+        const provider = this.provider;
+        if (__HEADLESS__) {
+            // A headless provider that does not return a container is backgrounded
+            return !provider.getContainer();
+        }
         if (!provider.video) {
+            // A provider without a video tag cannot be backgrounded
             return false;
         }
         // A backgrounded provider does not have a parent container, or has one, but without the media tag as a child
+        const container = provider.getContainer();
         return !container || (container && !container.contains(provider.video));
     }
 
@@ -244,6 +251,10 @@ export default class MediaController extends Events {
 
         this.item = item;
         this.provider.init(item);
+        if (__HEADLESS__) {
+            this.provider.mute(this.model.getMute());
+            this.provider.volume(this.model.get('volume'));
+        }
     }
 
     set audioTrack(index) {
@@ -251,9 +262,9 @@ export default class MediaController extends Events {
     }
 
     set background(shouldBackground) {
-        const { container, provider } = this;
+        const provider = this.provider;
         // A provider without a video tag must use attach and detach
-        if (!provider.video) {
+        if (!provider.video && !__HEADLESS__) {
             if (shouldBackground) {
                 this.detach();
             } else {
@@ -261,6 +272,7 @@ export default class MediaController extends Events {
             }
             return;
         }
+        const container = provider.getContainer();
         if (!container) {
             return;
         }
@@ -269,7 +281,16 @@ export default class MediaController extends Events {
             if (!this.background) {
                 this.thenPlayPromise.cancel();
                 this.pause();
-                container.removeChild(provider.video);
+                if (provider.removeFromContainer) {
+                    provider.removeFromContainer();
+                } else {
+                    if (__HEADLESS__) {
+                        console.error('Provider should implement `removeFromContainer()` to background provider media view. Calling `provider.setContainer(null)` instead.');
+                        provider.setContainer(null);
+                    } else {
+                        container.removeChild(provider.video);
+                    }
+                }
                 this.container = null;
             }
         } else {
@@ -321,8 +342,4 @@ function syncPlayerWithMediaModel(mediaModel) {
     // Sync player state with mediaModel state
     const mediaState = mediaModel.get('mediaState');
     mediaModel.trigger('change:mediaState', mediaModel, mediaState, mediaState);
-}
-
-function addProviderListeners(mediaController) {
-    mediaController.provider.on('all', mediaController.providerListener, mediaController);
 }

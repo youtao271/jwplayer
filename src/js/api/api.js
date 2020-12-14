@@ -28,6 +28,9 @@ function coreFactory(api, element) {
         event.setupTime = api._qoe.between('setup', 'ready');
     });
     core.on('all', (type, event) => {
+        if (__HEADLESS__ && __DEBUG__) {
+            console.log('[core trigger]', type);
+        }
         api.trigger(type, event);
     });
 
@@ -51,7 +54,9 @@ function resetPlayer(api, core) {
     }
     api.off();
     core.playerDestroy();
-    core.getContainer().removeAttribute('data-jwplayer-id');
+    if (!__HEADLESS__) {
+        core.getContainer().removeAttribute('data-jwplayer-id');
+    }
 }
 
 /**
@@ -88,7 +93,9 @@ export default function Api(element) {
     let core = coreFactory(this, element);
 
     qoeTimer.tick('init');
-    element.setAttribute('data-jwplayer-id', playerId);
+    if (!__HEADLESS__) {
+        element.setAttribute('data-jwplayer-id', playerId);
+    }
 
     Object.defineProperties(this, /** @lends Api.prototype */ {
         /**
@@ -189,6 +196,13 @@ export default function Api(element) {
         },
 
     });
+
+    if (__HEADLESS__) {
+        this.get = (attribute) => core.get(attribute);
+        this.set = (attribute, value) => core.set(attribute, value);
+        this.castVideo = (castProvider, item) => core.castVideo(castProvider, item);
+        this.stopCast = () => core.stopCast();
+    }
 
     Object.assign(this, /** @lends Api.prototype */ {
         /**
@@ -433,6 +447,16 @@ export default function Api(element) {
          */
         getMute() {
             return core.getMute();
+        },
+
+        /**
+         * Gets the player's visibility.
+         * @returns {Number} Returns a number between 0 and 1 that represents how much of the player is in the document viewport.
+         * Returns 0 if the player is not in an active tab, or if the player is completely out of the viewport.
+         * @since v8.18.0
+         */
+        getPercentViewable() {
+            return core.get('visibility');
         },
 
         /**
@@ -834,21 +858,22 @@ export default function Api(element) {
             return this;
         },
 
+         /**
+         * Stops casting immediately (Chromecast only).
+         * @return {Api} The Player API instance.
+         * @since v8.18.0
+         */
+        stopCasting() {
+            core.stopCasting();
+            return this;
+        },
+    
         /**
          * Creates a new instance of the instream adapter. If present, the previous instance created is destroyed first.
          * @returns {InstreamAdapter} The instream instance.
          */
         createInstream() {
             return core.createInstream();
-        },
-
-        /**
-         * Calls `skipAd` on the active instream adapter instance if present.
-         * @returns {Api} The Player API instance.
-         */
-        skipAd() {
-            core.skipAd();
-            return this;
         },
 
         /**
@@ -934,6 +959,75 @@ export default function Api(element) {
          */
         isBeforePlay() {
             return core.isBeforePlay();
+        },
+
+        /**
+         * Registers an async playlist item callback. Only one can be set. Replaces previously set callback.
+         *
+         * When the callback returns a promise, playlist progression will be blocked until the promise is resolved.
+         * If the promise resolves with a valid playlist object, that object will replace the item in the playlist.
+         *
+         * @param {function} callback - A callback run in advance of the
+         * "playlistItem" event depending on the callback context.
+         *
+         * `(item, index) => Promise<Item|undefined>|undefined`
+         *
+         * The callback accepts several arguments:
+         *    item - the playlist item
+         *    index - the playlist items index in the playlist
+         *
+         * The callback may be executed in advance of the current playlist item completing. This is to allow preloading
+         * of the next item and pre-rolls to be blocked.
+         *
+         * @param {Object} [options] - Reserved for future use.
+         * @returns {void}
+         */
+        setPlaylistItemCallback(callback, options) {
+            core.setItemCallback(callback, options);
+        },
+
+        /**
+         * Removes the async playlist item callback.
+         * @returns {void}
+         */
+        removePlaylistItemCallback() {
+            core.setItemCallback(null);
+        },
+
+        /**
+         * Gets the async blocking Promise for the next playlist item, or a specific playlist item if the
+         * index argument is supplied.
+         *
+         * The Promise returned resolves when the async item callback resolves for the
+         * playlist item. If there is no callback, or the callback promise resolved immediately, this promise can
+         * resolve in advance of the previous playlist item completing, to allow time for preloading media and
+         * any scheduled pre-rolls.
+         *
+         * The Promise will throw if the async item callback is rejected.
+         *
+         * @param {number} index - A valid playlist item index, or -1 for the next recommended item.
+         * @returns {Promise<Item>|null} The playlist item promise, or null when index is invalid or setup is incomplete.
+         */
+        getPlaylistItemPromise(index) {
+            return core.getItemPromise(index);
+        },
+        /**
+         * @returns {boolean} - a boolean indicating whether or not the given JW Player is currently floating
+         */
+        getFloating() {
+            return !!core.get('isFloating');
+        },
+        /**
+         * Updates the current floating player to ensure it is always or never floating depending on the arg
+         * @param {boolean} shouldFloat - whether or not the player should be floating
+         * @returns {void}
+         */
+        setFloating(shouldFloat) {
+            core.setConfig({
+                floating: {
+                    mode: shouldFloat ? 'always' : 'never'
+                }
+            });
         }
     });
 }
@@ -1053,4 +1147,10 @@ Object.assign(Api.prototype, /** @lends Api.prototype */ {
      * @returns {void}
      */
     pauseAd(toggle) {}, // eslint-disable-line
+
+    /**
+     * Skips the currently playing ad, if skippable. Implemented by ad plugins.
+     * @returns {Api} The Player API instance.
+     */
+    skipAd() {},
 });

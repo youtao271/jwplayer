@@ -3,8 +3,7 @@ import { showView } from 'api/core-shim';
 import setConfig from 'api/set-config';
 import ApiQueueDecorator from 'api/api-queue';
 import PlaylistLoader from 'playlist/loader';
-import Playlist, { filterPlaylist, validatePlaylist, normalizePlaylistItem } from 'playlist/playlist';
-import Item from 'playlist/item';
+import Playlist, { filterPlaylist, validatePlaylist, wrapPlaylistIndex } from 'playlist/playlist';
 import InstreamAdapter from 'controller/instream-adapter';
 import Captions from 'controller/captions';
 import Model from 'controller/model';
@@ -28,8 +27,18 @@ import { PLAYER_STATE, STATE_BUFFERING, STATE_IDLE, STATE_COMPLETE, STATE_PAUSED
 import ProgramController from 'program/program-controller';
 import initQoe from 'controller/qoe';
 import { BACKGROUND_LOAD_OFFSET } from 'program/program-constants';
-import { composePlayerError, convertToPlayerError, getPlayAttemptFailedErrorCode, MSG_CANT_PLAY_VIDEO, MSG_TECHNICAL_ERROR,
-    ERROR_COMPLETING_SETUP, ERROR_LOADING_PLAYLIST, ERROR_LOADING_PROVIDER, ERROR_LOADING_PLAYLIST_ITEM } from 'api/errors';
+import {
+    composePlayerError,
+    convertToPlayerError,
+    getPlayAttemptFailedErrorCode,
+    MSG_CANT_PLAY_VIDEO,
+    MSG_TECHNICAL_ERROR,
+    ERROR_COMPLETING_SETUP,
+    ERROR_LOADING_PLAYLIST,
+    ERROR_LOADING_PROVIDER,
+    ERROR_LOADING_PLAYLIST_ITEM,
+    ASYNC_PLAYLIST_ITEM_REJECTED
+} from 'api/errors';
 
 // The model stores a different state than the provider
 function normalizeState(newstate) {
@@ -41,6 +50,12 @@ function normalizeState(newstate) {
 
 const Controller = function() {};
 const noop = function() {};
+
+if (__HEADLESS__) {
+    Controller.prototype.set = function(property, value) {
+        return this._model.set(property, value);
+    };
+}
 
 Object.assign(Controller.prototype, {
     setup(config, _api, originalContainer, eventListeners, commandQueue, mediaPool) {
@@ -78,17 +93,25 @@ Object.assign(Controller.prototype, {
 
         const _backgroundLoading = _model.get('backgroundLoading');
 
-        const viewModel = new ViewModel(_model);
+        if (__HEADLESS__) {
+            _model.attributes.visibility = 1.0;
+        } else {
+            const viewModel = new ViewModel(_model);
 
-        _view = this._view = new View(_api, viewModel);
-        _view.on('all', (type, event) => {
-            if (event && event.doNotForward) {
-                return;
-            }
-            _trigger(type, event);
-        }, _this);
+            _view = this._view = new View(_api, viewModel);
+            _view.on('all', (type, event) => {
+                if (event && event.doNotForward) {
+                    return;
+                }
+                _trigger(type, event);
+            }, _this);
 
-        const _programController = this._programController = new ProgramController(_model, mediaPool);
+            viewModel.on('viewSetup', (viewElement) => {
+                showView(this, viewElement);
+            });
+        }
+
+        const _programController = this._programController = new ProgramController(_model, mediaPool, _api._publicApi);
         updateProgramSoundSettings();
         addProgramControllerListeners();
         initQoe(_model, _programController);
@@ -181,19 +204,29 @@ Object.assign(Controller.prototype, {
                 model.setStreamType(type);
             }, this);
 
-            const index = model.get('item') + 1;
             const recsAuto = (model.get('related') || {}).oncomplete === 'autoplay';
+            let index = model.get('item') + 1;
             let item = model.get('playlist')[index];
-            if ((item || recsAuto) && _backgroundLoading) {
+            if ((item || recsAuto)) {
                 const onPosition = (changedMediaModel, position) => {
+                    if (recsAuto && !item) {
+                        index = -1;
+                        item = _model.get('nextUp');
+                    }
                     // Do not background load DAI items because that item will be dynamically replaced before play
                     const allowPreload = (item && !item.daiSetting);
+                    if (!allowPreload) {
+                        return;
+                    }
                     const duration = mediaModel.get('duration');
-                    if (allowPreload && position && duration > 0 && position >= duration - BACKGROUND_LOAD_OFFSET) {
+                    if (position && duration > 0 && position >= duration - BACKGROUND_LOAD_OFFSET) {
                         mediaModel.off('change:position', onPosition, this);
-                        _programController.backgroundLoad(item);
-                    } else if (recsAuto) {
-                        item = _model.get('nextUp');
+                        if (_backgroundLoading) {
+                            _programController.backgroundLoad(item, index);
+                        } else {
+                            _programController.getAsyncItem(index).run();
+                        }
+
                     }
                 };
                 mediaModel.on('change:position', onPosition, this);
@@ -201,26 +234,27 @@ Object.assign(Controller.prototype, {
         });
 
         // Ensure captionsList event is raised after playlistItem
-        _captions = new Captions(_model);
-        _captions.on('all', _trigger, _this);
-
-        viewModel.on('viewSetup', (viewElement) => {
-            showView(this, viewElement);
-        });
+        if (!__HEADLESS__) {
+            _captions = new Captions(_model);
+            _captions.on('all', _trigger, _this);
+        }
 
         this.playerReady = function() {
+            if (__HEADLESS__) {
+                playerReadyNotify();
+            } else {
+                // Fire 'ready' once the view has resized so that player width and height are available
+                // (requires the container to be in the DOM)
+                _view.once(RESIZE, () => {
+                    try {
+                        playerReadyNotify();
+                    } catch (error) {
+                        _this.triggerError(convertToPlayerError(MSG_TECHNICAL_ERROR, ERROR_COMPLETING_SETUP, error));
+                    }
+                });
 
-            // Fire 'ready' once the view has resized so that player width and height are available
-            // (requires the container to be in the DOM)
-            _view.once(RESIZE, () => {
-                try {
-                    playerReadyNotify();
-                } catch (error) {
-                    _this.triggerError(convertToPlayerError(MSG_TECHNICAL_ERROR, ERROR_COMPLETING_SETUP, error));
-                }
-            });
-
-            _view.init();
+                _view.init();
+            }
         };
 
         function playerReadyNotify() {
@@ -240,9 +274,7 @@ Object.assign(Controller.prototype, {
                     };
                     const feedData = _model.get('feedData');
                     if (feedData) {
-                        const eventFeedData = Object.assign({}, feedData);
-                        delete eventFeedData.playlist;
-                        eventData.feedData = eventFeedData;
+                        eventData.feedData = Object.assign({}, feedData);
                     }
                     _this.trigger(PLAYLIST_LOADED, eventData);
                 }
@@ -333,7 +365,7 @@ Object.assign(Controller.prototype, {
             if (_model.get('state') === 'idle' && _model.get('autostart') === false) {
                 // If video has not been primed on Android, test that video will play before preloading
                 // This ensures we always prime the tag on play when necessary
-                if (!mediaPool.primed() && OS.android) {
+                if (!__HEADLESS__ && !mediaPool.primed() && OS.android) {
                     const video = mediaPool.getTestElement();
                     const muted = _this.getMute();
                     Promise.resolve().then(() => startPlayback(video, { muted })).then(() => {
@@ -366,9 +398,12 @@ Object.assign(Controller.prototype, {
             if (model.get('playOnViewable')) {
                 if (viewable) {
                     const reason = 'viewable';
-                    if (model.get('state') === STATE_IDLE) {
+                    const autoPauseAds = model.get('autoPause').pauseAds;
+                    const pauseReason = model.get('pauseReason');
+                    if (_getState() === STATE_IDLE) {
                         _autoStart(reason);
-                    } else {
+                    } else if ((!adState || autoPauseAds) && pauseReason !== 'interaction') {
+                        // resume normal playback or ads if pauseAds is true
                         _play({ reason });
                     }
                 } else if (OS.mobile && !adState) {
@@ -390,7 +425,11 @@ Object.assign(Controller.prototype, {
             const playReason = model.get('playReason');
 
             if (adState) {
-                _pauseAfterAd(viewable);
+                if (model.get('autoPause').pauseAds) {
+                    _pauseWhenNotViewable(viewable);
+                } else {
+                    _pauseAfterAd(viewable);
+                }
             } else if (playerState === STATE_PLAYING || playerState === STATE_BUFFERING) {
                 _pauseWhenNotViewable(viewable);
             } else if (playerState === STATE_IDLE && playReason === 'playlist') {
@@ -408,7 +447,7 @@ Object.assign(Controller.prototype, {
             }
             _this.trigger('destroyPlugin', {});
             _stop(true);
-
+            _programController.clearItemPromises();
             checkAutoStartCancelable.cancel();
             checkAutoStartCancelable = cancelable(_checkAutoStart);
             updatePlaylistCancelable.cancel();
@@ -488,10 +527,6 @@ Object.assign(Controller.prototype, {
             _model.set('playReason', playReason);
 
             const adState = _getAdState();
-            const pauseReason = _model.get('pauseReason');
-            if (adState && pauseReason === 'viewable' && playReason !== 'interaction') {
-                return;
-            }
 
             if (adState) {
                 // this will resume the ad. _api.playAd would load a new ad
@@ -501,9 +536,15 @@ Object.assign(Controller.prototype, {
 
             if (_model.get('state') === STATE_COMPLETE) {
                 _stop(true);
-                _this.setItemIndex(0);
+                return _this.setItemIndex(0).then(() => {
+                    return _playAttempt(meta, playReason);
+                });
             }
 
+            return _playAttempt(meta, playReason);
+        }
+
+        function _playAttempt(meta, playReason) {
             if (!_beforePlay) {
                 _beforePlay = true;
                 _this.trigger(MEDIA_BEFOREPLAY, {
@@ -524,7 +565,11 @@ Object.assign(Controller.prototype, {
                     // Force tags to prime if we're about to play an ad
                     // Resetting the source in order to prime is OK since we'll be switching it anyway
                     if (inInteraction() && !_backgroundLoading) {
-                        _model.get('mediaElement').load();
+                        const video = _model.get('mediaElement');
+                        if (_this._instreamAdapter) {
+                            video.src = '';
+                        }
+                        video.load();
                     }
                     _interruptPlay = false;
                     _actionOnAttach = null;
@@ -556,7 +601,8 @@ Object.assign(Controller.prototype, {
 
             // Detect and store browser autoplay setting in the model.
             const adConfig = _model.get('advertising');
-            canAutoplay(mediaPool, {
+            const autoPlayCheck = __HEADLESS__ ? Promise.resolve.bind(Promise) : canAutoplay;
+            autoPlayCheck(mediaPool, {
                 cancelable: checkAutoStartCancelable,
                 muted: _this.getMute(),
                 allowMuted: adConfig ? adConfig.autoplayadsmuted : true
@@ -564,7 +610,7 @@ Object.assign(Controller.prototype, {
                 _model.set('canAutoplay', result);
 
                 // Only apply autostartMuted on un-muted autostart attempt.
-                if (result === AUTOPLAY_MUTED && !_this.getMute()) {
+                if (result === (__HEADLESS__ || AUTOPLAY_MUTED) && !_this.getMute()) {
                     _model.set('autostartMuted', true);
                     updateProgramSoundSettings();
 
@@ -574,7 +620,7 @@ Object.assign(Controller.prototype, {
                     });
                 }
 
-                if (_this.getMute() && _model.get('enableDefaultCaptions')) {
+                if (_captions && _this.getMute() && _model.get('enableDefaultCaptions')) {
                     _captions.selectDefaultIndex(1);
                 }
 
@@ -585,7 +631,7 @@ Object.assign(Controller.prototype, {
                     _actionOnAttach = null;
                 });
             }).catch(error => {
-                _model.set('canAutoplay', AUTOPLAY_DISABLED);
+                _model.set('canAutoplay', (__HEADLESS__ || AUTOPLAY_DISABLED));
                 _model.set('autostart', false);
                 // Emit event unless test was explicitly canceled.
                 if (!checkAutoStartCancelable.cancelled()) {
@@ -684,6 +730,7 @@ Object.assign(Controller.prototype, {
         }
 
         function _item(index, meta) {
+            _this.instreamDestroy();
             _stop(true);
             _this.setItemIndex(index);
             // Use this.play() so that command is queued until after "playlistItem" event
@@ -779,10 +826,10 @@ Object.assign(Controller.prototype, {
             return _programController.audioTracks;
         }
 
-        function _setCurrentCaptions(index) {
+        function _setCurrentCaptions(index, tracks) {
             index = parseInt(index, 10) || 0;
 
-            _model.persistVideoSubtitleTrack(index);
+            _model.persistVideoSubtitleTrack(index, tracks);
             _programController.subtitles = index;
 
             _this.trigger(CAPTIONS_CHANGED, {
@@ -792,11 +839,11 @@ Object.assign(Controller.prototype, {
         }
 
         function _getCurrentCaptions() {
-            return _captions.getCurrentIndex();
+            return _captions ? _captions.getCurrentIndex() : -1;
         }
 
         function _getCaptionsList() {
-            return _captions.getCaptionsList();
+            return _captions ? _captions.getCaptionsList() : [];
         }
 
         /* Used for the InStream API */
@@ -812,7 +859,7 @@ Object.assign(Controller.prototype, {
             if (_backgroundLoading) {
                 _programController.backgroundActiveMedia();
             } else {
-                _programController.attached = false;
+                return _programController.setAttached(false);
             }
         }
 
@@ -822,7 +869,7 @@ Object.assign(Controller.prototype, {
             if (_backgroundLoading) {
                 _programController.restoreBackgroundMedia();
             } else {
-                _programController.attached = true;
+                _programController.setAttached(true);
             }
 
             if (typeof _actionOnAttach === 'function') {
@@ -835,6 +882,8 @@ Object.assign(Controller.prototype, {
                 state = !_model.get('fullscreen');
             }
 
+            // TODO: rather than the player responding to this state change this should be view / provider based with
+            //  Promise resolution for modern browsers
             _model.set('fullscreen', state);
             if (_this._instreamAdapter && _this._instreamAdapter._adModel) {
                 _this._instreamAdapter._adModel.set('fullscreen', state);
@@ -845,12 +894,15 @@ Object.assign(Controller.prototype, {
             _programController
                 .on('all', _trigger, _this)
                 .on('subtitlesTracks', (e) => {
+                    if (!_captions) {
+                        return;
+                    }
                     _captions.setSubtitlesTracks(e.tracks);
                     const defaultCaptionsIndex = _captions.getCurrentIndex();
 
                     // set the current captions if the default index isn't 0 or "Off"
                     if (defaultCaptionsIndex > 0) {
-                        _setCurrentCaptions(defaultCaptionsIndex);
+                        _setCurrentCaptions(defaultCaptionsIndex, e.tracks);
                     }
                 }, _this)
                 .on(MEDIA_COMPLETE, () => {
@@ -861,8 +913,8 @@ Object.assign(Controller.prototype, {
         }
 
         function updateProgramSoundSettings() {
-            _programController.mute = _model.getMute();
-            _programController.volume = _model.get('volume');
+            _programController.setMute(_model.getMute());
+            _programController.setVolume(_model.get('volume'));
         }
 
         this.preload = preload;
@@ -904,14 +956,28 @@ Object.assign(Controller.prototype, {
 
             const playlist = _model.get('playlist');
             const length = playlist.length;
+            const wrappedIndex = wrapPlaylistIndex(index, length);
 
-            // If looping past the end, or before the beginning
-            index = (parseInt(index, 10) || 0) % length;
-            if (index < 0) {
-                index += length;
-            }
-
-            return _programController.setActiveItem(index).catch(error => {
+            return _programController.setActiveItem(wrappedIndex).catch(error => {
+                if (error.code === ASYNC_PLAYLIST_ITEM_REJECTED) {
+                    // If all items were rejected throw. This will fail setup with setupError code 102700
+                    const allSkipped = _programController.asyncItems.reduce((skipped, asyncItem) =>
+                        skipped && asyncItem.skipped, true);
+                    if (allSkipped) {
+                        throw error;
+                    }
+                    // If the last item is rejected we need to stop and complete playlist playback. Otherwise,
+                    // shouldAutoAdvance will return true because "nextUp" is out of date.
+                    // "related could not update "nextUp" since we've skipped over "playlistItem" events.
+                    // We'll need to move "nextUp" logic out of "related" and into here or the program-controller
+                    // So that "nextUp" can be updated when rejecting item playback with `setPlaylistItemCallback`.
+                    const restoreAutoAdvance = this.shouldAutoAdvance;
+                    this.shouldAutoAdvance = () => false;
+                    _completeHandler();
+                    _model.attributes.itemReady = true;
+                    this.shouldAutoAdvance = restoreAutoAdvance;
+                    return;
+                }
                 if (error.code >= 151 && error.code <= 162) {
                     error = composePlayerError(error, ERROR_LOADING_PROVIDER);
                 }
@@ -954,6 +1020,22 @@ Object.assign(Controller.prototype, {
         this.getWidth = () => _model.get('containerWidth');
         this.getHeight = () => _model.get('containerHeight');
         this.getItemQoe = () => _model._qoeItem;
+
+        this.setItemCallback = function (callback) {
+            _programController.itemCallback = callback;
+        };
+        this.getItemPromise = function (index) {
+            const playlist = _model.get('playlist');
+            if (index < -1 || index > playlist.length - 1 || isNaN(index)) {
+                return null;
+            }
+            const asyncItem = _programController.getAsyncItem(index);
+            if (!asyncItem) {
+                return null;
+            }
+            return asyncItem.promise;
+        };
+
         this.addButton = function(img, tooltip, callback, id, btnClass) {
             let customButtons = _model.get('customButtons') || [];
             let replaced = false;
@@ -992,15 +1074,29 @@ Object.assign(Controller.prototype, {
         };
 
         // View passthroughs
-        this.resize = _view.resize;
-        this.getSafeRegion = _view.getSafeRegion;
-        this.setCaptions = _view.setCaptions;
+        if (__HEADLESS__) {
+            // These should be overridden by the app using the headless player
+            this.resize = this.setCaptions = function() {};
+            this.getSafeRegion = () => ({
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0
+            });
+        } else {
+            this.resize = _view.resize;
+            this.getSafeRegion = _view.getSafeRegion;
+            this.setCaptions = _view.setCaptions;
+        }
 
         this.checkBeforePlay = function() {
             return _beforePlay;
         };
 
         this.setControls = function (mode) {
+            if (__HEADLESS__) {
+                return;
+            }
             if (!isBoolean(mode)) {
                 mode = !_model.get('controls');
             }
@@ -1023,7 +1119,10 @@ Object.assign(Controller.prototype, {
                 // Throw exception if playlist is empty
                 validatePlaylist(filteredPlaylist);
 
-                _model.set('feedData', feedData);
+                const sanitizedFeedData = Object.assign({}, feedData);
+                delete sanitizedFeedData.playlist;
+
+                _model.set('feedData', sanitizedFeedData);
                 _model.set('playlist', filteredPlaylist);
             } catch (error) {
                 return Promise.reject(error);
@@ -1032,15 +1131,21 @@ Object.assign(Controller.prototype, {
         };
 
         this.setPlaylistItem = function (index, item) {
-            item = normalizePlaylistItem(_model, new Item(item), item.feedData || {});
-
-            if (item) {
-                const playlist = _model.get('playlist');
-                playlist[index] = item;
-
-                if (index === _model.get('item') && _model.get('state') === 'idle') {
-                    this.setItemIndex(index);
-                }
+            const playlist = _model.get('playlist');
+            const wrappedIndex = wrapPlaylistIndex(index, playlist.length);
+            const asyncItemController = _programController.getAsyncItem(wrappedIndex);
+            const newItem = asyncItemController.replace(item);
+            if (!newItem) {
+                return;
+            }
+            const playlistItem = playlist[wrappedIndex];
+            if (item && item !== playlistItem) {
+                _programController.asyncItems[wrappedIndex] = null;
+                asyncItemController.reject(new Error('Item replaced'));
+            }
+            // If the current item was replaced, and the player is idle, reload it
+            if (wrappedIndex === _model.get('item') && _model.get('state') === 'idle') {
+                this.setItemIndex(wrappedIndex);
             }
         };
 
@@ -1074,12 +1179,6 @@ Object.assign(Controller.prototype, {
             return this._instreamAdapter;
         };
 
-        this.skipAd = function() {
-            if (this._instreamAdapter) {
-                this._instreamAdapter.skipAd();
-            }
-        };
-
         this.instreamDestroy = function() {
             if (_this._instreamAdapter) {
                 _this._instreamAdapter.destroy();
@@ -1099,7 +1198,9 @@ Object.assign(Controller.prototype, {
         // Add commands from CoreLoader to queue
         apiQueue.queue.push.apply(apiQueue.queue, commandQueue);
 
-        _view.setup();
+        if (_view) {
+            _view.setup();
+        }
     },
     get(property) {
         if (property in INITIAL_MEDIA_STATE) {

@@ -11,7 +11,8 @@
         "__REPO__": false,
         "__SELF_HOSTED__": false,
         "__DEBUG__": false,
-        "__BUILD_VERSION__": false
+        "__BUILD_VERSION__": false,
+        "__HEADLESS__": false
     },
     "parserOptions": {
         "sourceType": "module"
@@ -27,8 +28,12 @@
             "error",
             {
                 "name": "VTTCue",
-                "message": "import VTTCue from 'parsers/captions/vttcue'"
+                "message": "import VTTCue from 'os/parsers/captions/vttcue'"
             }
+        ],
+        "no-restricted-properties": [2,
+            { "property": "findIndex" },  // Intended to block usage of Array.prototype.findIndex
+            { "property": "find" }        // Intended to block usage of Array.prototype.find
         ],
         "no-for-of-loops/no-for-of-loops": 2,
         "no-unsanitized/method": 2,
@@ -161,5 +166,58 @@
         "max-statements": 0,
         "object-curly-spacing": ["error", "always"],
         "keyword-spacing": 2
-    }
+    },
+    "overrides": [
+        {
+            "files": ["src/js/**/*.ts"],
+            "env": {
+                "browser": true,
+                "es6": true,
+                "commonjs": true
+            },
+            "parser": "@typescript-eslint/parser",
+            "parserOptions":{
+                "sourceType": "module",
+                "project": "./tsconfig.json"
+            },
+            "plugins": [
+                "@typescript-eslint",
+                "@typescript-eslint/tslint"
+            ],
+            "rules": {
+                "@typescript-eslint/tslint/config": [2, {
+                    "rules": {
+                        "typedef": [
+                            true,
+                            "call-signature",
+                            "parameter"
+                        ]
+                    }
+                }],
+                "@typescript-eslint/no-explicit-any": 0,
+                "@typescript-eslint/adjacent-overload-signatures": "error",
+                "@typescript-eslint/ban-ts-ignore": "error",
+                "@typescript-eslint/ban-types": "error",
+                "@typescript-eslint/class-name-casing": "error",
+                "@typescript-eslint/consistent-type-assertions": "error",
+                "@typescript-eslint/interface-name-prefix": "error",
+                "@typescript-eslint/member-delimiter-style": "error",
+                "@typescript-eslint/no-empty-function": "error",
+                "@typescript-eslint/no-empty-interface": "error",
+                "@typescript-eslint/no-inferrable-types": "error",
+                "@typescript-eslint/no-misused-new": "error",
+                "@typescript-eslint/no-namespace": "error",
+                "@typescript-eslint/no-non-null-assertion": "warn",
+                "@typescript-eslint/no-this-alias": "warn",
+                "@typescript-eslint/no-var-requires": "error",
+                "@typescript-eslint/no-unused-vars": "error",
+                "@typescript-eslint/prefer-namespace-keyword": "error",
+                "@typescript-eslint/triple-slash-reference": "error",
+                "@typescript-eslint/type-annotation-spacing": "error",
+                "prefer-rest-params": "error",
+                "prefer-spread": "error",
+                "no-unused-vars": 0
+            }
+        }
+    ]
 }

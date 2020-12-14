@@ -69,7 +69,7 @@ describe('Background Loading', function () {
             mediaController.container = container;
             mediaController.item = {
                 starttime: 42
-            }
+            };
             mediaController.beforeComplete = true;
             mediaController.background = true;
             mediaController.on('complete', onComplete);
@@ -180,12 +180,15 @@ describe('Background Loading', function () {
         it('destroys background media if there is an active foreground item', function () {
             programController._setActiveMedia(mediaController);
             programController.backgroundActiveMedia();
-            programController._setActiveMedia(mediaController);
+            const mockProvider2 = new MockProvider();
+            mockProvider2.video = document.createElement('video');
+            const mediaController2 = new MediaController(mockProvider2, model);
+            programController._setActiveMedia(mediaController2);
             programController._setActiveMedia = sinon.spy();
             mediaPool.recycle = sinon.spy();
 
             programController.restoreBackgroundMedia();
-            expect(programController._setActiveMedia.calledOnce).to.equal(false);
+            expect(programController._setActiveMedia.calledOnce).to.equal(false, 'called _setActiveMedia');
             expect(mediaPool.recycle.calledOnce).to.equal(true);
             expect(programController.background.currentMedia).to.equal(null);
         });

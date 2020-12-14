@@ -69,7 +69,10 @@ export const addedProperties = {
 
 export default {
     id: '',
-    autoPause: { viewability: false },
+    autoPause: {
+        viewability: false,
+        pauseAds: false
+    },
     autostart: false,
     base: '',
     controls: true,
@@ -80,6 +83,7 @@ export default {
     displaytitle: true,
     displaydescription: true,
     displayPlaybackLabel: false,
+    enableShortcuts: true,
     playbackRateControls: true,
     playbackRates: [1.0],
     playbackRate: 1,
@@ -112,5 +116,6 @@ export default {
     setupConfig: {},
     bandwidthEstimate: null,
     bitrateSelection: null,
-    backgroundLoading: Features.backgroundLoading
+    backgroundLoading: Features.backgroundLoading,
+    liveSyncDuration: 25
 };

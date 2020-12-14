@@ -1,12 +1,12 @@
 import { PLAYLIST_LOADED, ERROR } from 'events/events';
 import PlaylistLoader from 'playlist/loader';
-import Playlist, { filterPlaylist, validatePlaylist } from 'playlist/playlist';
+import Playlist, { filterPlaylist, validatePlaylist, wrapPlaylistIndex } from 'playlist/playlist';
 import ScriptLoader from 'utils/scriptloader';
-import { bundleContainsProviders } from 'api/core-loader';
 import { composePlayerError, PlayerError,
     SETUP_ERROR_LOADING_PLAYLIST, SETUP_ERROR_LOADING_PROVIDER,
     ERROR_LOADING_TRANSLATIONS, ERROR_LOADING_TRANSLATIONS_EMPTY_RESPONSE } from 'api/errors';
 import { getCustomLocalization, isLocalizationComplete, loadJsonTranslation, isTranslationAvailable, applyTranslation } from 'utils/language';
+import { bundleContainsProviders } from 'api/core-loader';
 
 export function loadPlaylist(_model) {
     const playlist = _model.get('playlist');
@@ -56,8 +56,13 @@ export function loadProvider(_model) {
             throw e;
         }
 
+        if (__HEADLESS__) {
+            return Promise.resolve();
+        }
+
         const providersManager = _model.getProviders();
-        const { provider, name } = providersManager.choose(playlist[0].sources[0]);
+        const wrappedIndex = wrapPlaylistIndex(_model.get('item'), playlist.length);
+        const { provider, name } = providersManager.choose(playlist[wrappedIndex].sources[0]);
 
         // If provider already loaded or a locally registered one, return it
         if (typeof provider === 'function') {

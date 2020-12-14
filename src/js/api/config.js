@@ -1,3 +1,4 @@
+import { normalizeAspectRatio, normalizeSize } from 'api/config-normalization';
 import { loadFrom, getScriptPath } from 'utils/playerutils';
 import { serialize } from 'utils/parser';
 import { isValidNumber, isNumber, pick, isBoolean } from 'utils/underscore';
@@ -9,8 +10,11 @@ import { getLanguage, getCustomLocalization, applyTranslation, normalizeIntl } f
 /* eslint camelcase: 0 */
 // Defaults
 // Alphabetical order
-const Defaults = {
-    autoPause: { viewability: false },
+export const Defaults = {
+    autoPause: {
+        viewability: false,
+        pauseAds: false
+    },
     autostart: false,
     bandwidthEstimate: null,
     bitrateSelection: null,
@@ -21,8 +25,10 @@ const Defaults = {
     displaydescription: true,
     displaytitle: true,
     displayPlaybackLabel: false,
+    enableShortcuts: true,
     height: 360,
     intl: {},
+    item: 0,
     language: 'en',
     liveTimeout: null,
     localization: en,
@@ -37,6 +43,19 @@ const Defaults = {
     width: 640
 };
 
+export function getLiveSyncDuration(liveSyncDuration) {
+    if (!liveSyncDuration) {
+        return 25;
+    }
+    if (liveSyncDuration < 5) {
+        return 5;
+    }
+    if (liveSyncDuration > 30) {
+        return 30;
+    } 
+    return liveSyncDuration;
+}
+
 function _deserialize(options) {
     Object.keys(options).forEach((key) => {
         if (key === 'id') {
@@ -44,13 +63,6 @@ function _deserialize(options) {
         }
         options[key] = serialize(options[key]);
     });
-}
-
-function _normalizeSize(val) {
-    if (val.slice && val.slice(-2) === 'px') {
-        val = val.slice(0, -2);
-    }
-    return val;
 }
 
 
@@ -78,13 +90,22 @@ const Config = function(options, persisted) {
     }
     config.base = (config.base || loadFrom()).replace(/\/?$/, '/');
     __webpack_public_path__ = config.base;
-    config.width = _normalizeSize(config.width);
-    config.height = _normalizeSize(config.height);
-    config.aspectratio = _evaluateAspectRatio(config.aspectratio, config.width);
+    config.width = normalizeSize(config.width);
+    config.height = normalizeSize(config.height);
+    config.aspectratio = normalizeAspectRatio(config.aspectratio, config.width);
     config.volume = isValidNumber(config.volume) ? Math.min(Math.max(0, config.volume), 100) : Defaults.volume;
     config.mute = !!config.mute;
     config.language = language;
     config.intl = intl;
+
+    const playlistIndex = config.playlistIndex;
+    if (playlistIndex) {
+        config.item = playlistIndex;
+    }
+
+    if (!isNumber(config.item)) {
+        config.item = 0;
+    }
 
     // If autoPause is configured with an empty block,
     // default autoPause.viewability to true.
@@ -133,6 +154,7 @@ const Config = function(options, persisted) {
             'type',
             'mediaid',
             'image',
+            'images',
             'file',
             'sources',
             'tracks',
@@ -165,30 +187,10 @@ const Config = function(options, persisted) {
     config.bandwidthEstimate = isValidNumber(parsedBwEstimate) ? parsedBwEstimate : _adjustDefaultBwEstimate(config.defaultBandwidthEstimate);
     config.bitrateSelection = isValidNumber(parsedBitrateSelection) ? parsedBitrateSelection : Defaults.bitrateSelection;
 
+    config.liveSyncDuration = getLiveSyncDuration(config.liveSyncDuration);
+
     config.backgroundLoading = isBoolean(config.backgroundLoading) ? config.backgroundLoading : Features.backgroundLoading;
     return config;
 };
-
-function _evaluateAspectRatio(ar, width) {
-    if (width.toString().indexOf('%') === -1) {
-        return 0;
-    }
-    if (typeof ar !== 'string' || !ar) {
-        return 0;
-    }
-    if (/^\d*\.?\d+%$/.test(ar)) {
-        return ar;
-    }
-    const index = ar.indexOf(':');
-    if (index === -1) {
-        return 0;
-    }
-    const w = parseFloat(ar.substr(0, index));
-    const h = parseFloat(ar.substr(index + 1));
-    if (w <= 0 || h <= 0) {
-        return 0;
-    }
-    return (h / w * 100) + '%';
-}
 
 export default Config;
